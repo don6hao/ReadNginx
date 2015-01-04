@@ -15,9 +15,13 @@
 
 
 typedef struct {
+    /* 对端将接受到的命令 */
      ngx_uint_t  command;
+     /* 进程id */
      ngx_pid_t   pid;
+     /* 在全局ngx_processess数组中的位置 */
      ngx_int_t   slot;
+     /* 传递的fd */
      ngx_fd_t    fd;
 } ngx_channel_t;
 

@@ -33,6 +33,7 @@ char           **ngx_os_argv;
 ngx_int_t        ngx_process_slot;
 ngx_socket_t     ngx_channel;
 ngx_int_t        ngx_last_process;
+/* 全局的进程表，保存了存活的子进程。*/
 ngx_process_t    ngx_processes[NGX_MAX_PROCESSES];
 
 
@@ -82,7 +83,9 @@ ngx_signal_t  signals[] = {
     { 0, NULL, "", NULL }
 };
 
-
+/*
+ *
+ */
 ngx_pid_t
 ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     char *name, ngx_int_t respawn)
@@ -91,11 +94,17 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     ngx_pid_t  pid;
     ngx_int_t  s;
 
+    /* 如果传递进来的类型大于0,
+     * 则就是已经确定这个进程已经退出，
+     * 我们就可以直接确定slot
+     */
     if (respawn >= 0) {
         s = respawn;
 
     } else {
-        /* 从全局ngx_process数组中获取未使用的成员 */
+        /* 遍历ngx_processess，从而找到空闲的slot，
+         * 将子进程信息放入全局进程信息表的相应的slot。
+         */
         for (s = 0; s < ngx_last_process; s++) {
             if (ngx_processes[s].pid == -1) {
                 break;
@@ -146,7 +155,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
             ngx_close_channel(ngx_processes[s].channel, cycle->log);
             return NGX_INVALID_PID;
         }
-
+        /* 打开异步模式 */
         on = 1;
         if (ioctl(ngx_processes[s].channel[0], FIOASYNC, &on) == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
@@ -154,14 +163,14 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
             ngx_close_channel(ngx_processes[s].channel, cycle->log);
             return NGX_INVALID_PID;
         }
-
+        /* 设置异步IO的所有者 */
         if (fcntl(ngx_processes[s].channel[0], F_SETOWN, ngx_pid) == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                           "fcntl(F_SETOWN) failed while spawning \"%s\"", name);
             ngx_close_channel(ngx_processes[s].channel, cycle->log);
             return NGX_INVALID_PID;
         }
-
+        /* 使用execl执行的程序里，此描述符被关闭，不能再使用它 */
         if (fcntl(ngx_processes[s].channel[0], F_SETFD, FD_CLOEXEC) == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                           "fcntl(FD_CLOEXEC) failed while spawning \"%s\"",
@@ -177,7 +186,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
             ngx_close_channel(ngx_processes[s].channel, cycle->log);
             return NGX_INVALID_PID;
         }
-
+        /* 设置当前的子进程的句柄 */
         ngx_channel = ngx_processes[s].channel[1];
 
     } else {
@@ -185,6 +194,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
         ngx_processes[s].channel[1] = -1;
     }
 
+    /* 把子进程在ngx_processes中的slot赋值给ngx_process_slot*/
     ngx_process_slot = s;
 
     /*
@@ -200,9 +210,9 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
         ngx_close_channel(ngx_processes[s].channel, cycle->log);
         return NGX_INVALID_PID;
 
-    case 0:
+    case 0: /* child process */
         ngx_pid = ngx_getpid();
-        proc(cycle, data); /* ngx_worker_process_cycle */
+        proc(cycle, data); /* proc equal ngx_worker_process_cycle */
         break;
 
     default:
@@ -214,6 +224,8 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     ngx_processes[s].pid = pid;
     ngx_processes[s].exited = 0;
 
+    /* 如果大于0,则说明我们确定了重启的子进程，
+     * 因此下面的初始化就用已死的子进程的就够了。*/
     if (respawn >= 0) {
         return pid;
     }

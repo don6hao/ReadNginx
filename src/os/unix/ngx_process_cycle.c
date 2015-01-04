@@ -371,6 +371,13 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
         ngx_spawn_process(cycle, ngx_worker_process_cycle,
                           (void *) (intptr_t) i, "worker process", type);
 
+        /*
+         * 在nginx中是每次新的子进程fork完毕后，
+         * 然后父进程此时将这个子进程id，
+         * 以及流管道的句柄channel[0]传递给前面的子进程。
+         * 收到信息的子进程更新自己的ngx_processes数组，
+         * 这样子进程之间也可以通信了。
+         */
         ch.pid = ngx_processes[ngx_process_slot].pid;
         ch.slot = ngx_process_slot;
         ch.fd = ngx_processes[ngx_process_slot].channel[0];
@@ -457,7 +464,7 @@ ngx_pass_open_channel(ngx_cycle_t *cycle, ngx_channel_t *ch)
                       ngx_processes[i].channel[0]);
 
         /* TODO: NGX_AGAIN */
-
+        /* ch的信息发给前面的子进程们 */
         ngx_write_channel(ngx_processes[i].channel[0],
                           ch, sizeof(ngx_channel_t), cycle->log);
     }
@@ -1159,6 +1166,7 @@ ngx_channel_handler(ngx_event_t *ev)
                            "get channel s:%i pid:%P fd:%d",
                            ch.slot, ch.pid, ch.fd);
 
+         /* 进程更新自己的ngx_processes信息，记录其他子进程的相关信息 */
             ngx_processes[ch.slot].pid = ch.pid;
             ngx_processes[ch.slot].channel[0] = ch.fd;
             break;
