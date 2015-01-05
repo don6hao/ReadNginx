@@ -137,8 +137,16 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
 
+    /*
+     * fork出数量大小为worker_processes个的worker子进程
+     */
     ngx_start_worker_processes(cycle, ccf->worker_processes,
                                NGX_PROCESS_RESPAWN);
+    /*
+     * 启动cache子系统
+     * Nginx的cache实现比较简单，没有使用内存，
+     * 全部都是使用文件来对后端的response进行cache
+     */
     ngx_start_cache_manager_processes(cycle, 0);
 
     ngx_new_binary = 0;
@@ -147,6 +155,12 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
     live = 1;
 
     for ( ;; ) {
+        /*
+         * delay用来等待子进程退出的时间，由于我们接受到SIGINT信号后，我们需要先发送信号给子进程，
+         * 而子进程的退出需要一定的时间，超时时如果子进程已退出，我们父进程就直接退出，
+         * 否则发送sigkill信号给子进程(强制退出),然后再退出。
+         *
+         */
         if (delay) {
             if (ngx_sigalrm) {
                 sigio = 0;
@@ -157,11 +171,32 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                            "termination cycle: %d", delay);
 
+            /*
+             *  struct itimerval {
+             *      struct timeval it_interval;
+             *      struct timeval it_value;
+             *  };
+             *  struct timeval {
+             *      long tv_sec;
+             *      long tv_usec;
+             *  };
+             *  it_interval指定间隔时间，it_value指定初始定时时间。
+             *  如果只指定it_value，就是实现一次定时；
+             *  如果同时指定 it_interval，则超时后，系统会重新初始化it_value为it_interval，实现重复定时；
+             *  两者都清零，则会清除定时器。
+             *
+             */
             itv.it_interval.tv_sec = 0;
             itv.it_interval.tv_usec = 0;
             itv.it_value.tv_sec = delay / 1000;
             itv.it_value.tv_usec = (delay % 1000 ) * 1000;
 
+            /* 设置定时器
+             * ITIMER_REAL: 以系统真实的时间来计算，它送出SIGALRM信号。
+             * ITIMER_VIRTUAL: -以该进程在用户态下花费的时间来计算，它送出SIGVTALRM信号。
+             * ITIMER_PROF: 以该进程在用户态下和内核态下所费的时间来计算，它送出SIGPROF信号。
+             * setitimer()调用成功返回0，否则返回-1。
+             * */
             if (setitimer(ITIMER_REAL, &itv, NULL) == -1) {
                 ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                               "setitimer() failed");
@@ -170,6 +205,16 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
         ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "sigsuspend");
 
+        /*
+         * 延时等待定时器
+         * sigsuspend函数接受一个信号集指针，将信号屏蔽字设置为信号集中的值，
+         * 在进程接受到一个信号之前，进程会挂起，当捕捉一个信号，
+         * 首先执行信号处理程序，然后从sigsuspend返回，
+         * 最后将信号屏蔽字恢复为调用sigsuspend之前的值。
+         * 由于前面调用sigemptyset(&set);此时sigsuspend(&set)不会阻塞任何信号
+         * 就是说信号都会被捕抓到
+         *
+         * */
         sigsuspend(&set);
 
         ngx_time_update();
@@ -177,19 +222,28 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                        "wake up, sigio %i", sigio);
 
+        /* 若ngx_reap为1，说明有子进程已退出 */
         if (ngx_reap) {
             ngx_reap = 0;
             ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "reap children");
-
+            /*
+             * 这个里面处理退出的子进程(有的worker异常退出，这时我们就需要重启这个worker )，
+             * 如果所有子进程都退出则会返回0.
+             */
             live = ngx_reap_children(cycle);
         }
 
+        /*
+         * 如果没有存活的子进程，并且收到了ngx_terminate或者ngx_quit信号，则master退出
+         * */
         if (!live && (ngx_terminate || ngx_quit)) {
             ngx_master_process_exit(cycle);
         }
 
+        /* 收到sigint 信号 */
         if (ngx_terminate) {
             if (delay == 0) {
+                /* 设置延时 */
                 delay = 50;
             }
 
@@ -201,8 +255,10 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             sigio = ccf->worker_processes + 2 /* cache processes */;
 
             if (delay > 1000) {
+                /* 若超时，强制kill worker */
                 ngx_signal_worker_processes(cycle, SIGKILL);
             } else {
+                /* 负责发送sigint给worker，让它退出*/
                 ngx_signal_worker_processes(cycle,
                                        ngx_signal_value(NGX_TERMINATE_SIGNAL));
             }
@@ -210,7 +266,9 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             continue;
         }
 
+        /* 收到quit信号 */
         if (ngx_quit) {
+            /* 发送给worker quit信号 */
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
 
@@ -227,9 +285,14 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             continue;
         }
 
+        /* 收到需要reconfig信号 */
         if (ngx_reconfigure) {
             ngx_reconfigure = 0;
 
+            /*
+             * 判断是否热代码替换后的新的代码还在运行中(也就是还没退出当前的master)。
+             * 如果还在运行中，则不需要重新初始化config。
+             */
             if (ngx_new_binary) {
                 ngx_start_worker_processes(cycle, ccf->worker_processes,
                                            NGX_PROCESS_RESPAWN);
@@ -241,6 +304,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reconfiguring");
 
+            /* 重新初始化config，并重新启动新的worker */
             cycle = ngx_init_cycle(cycle);
             if (cycle == NULL) {
                 cycle = (ngx_cycle_t *) ngx_cycle;
@@ -262,6 +326,11 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
         }
 
+        /*
+         * 代码里面是当热代码替换后，如果ngx_noacceptig被设置了，
+         * 则设置这个标志位(难道意思是热代码替换前要先停止当前的accept连接？)
+         *
+         */
         if (ngx_restart) {
             ngx_restart = 0;
             ngx_start_worker_processes(cycle, ccf->worker_processes,
@@ -270,6 +339,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             live = 1;
         }
 
+        /* 重新打开log */
         if (ngx_reopen) {
             ngx_reopen = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reopening logs");
@@ -278,12 +348,17 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
                                         ngx_signal_value(NGX_REOPEN_SIGNAL));
         }
 
+        /* 热代码替换 */
         if (ngx_change_binary) {
             ngx_change_binary = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "changing binary");
+            /* 进行热代码替换，这里是调用execve来执行新的代码 */
             ngx_new_binary = ngx_exec_new_binary(cycle, ngx_argv);
         }
 
+        /* 接受到停止accept连接，其实也就是worker退出
+         * (有区别的是，这里master不需要退出)
+         * */
         if (ngx_noaccept) {
             ngx_noaccept = 0;
             ngx_noaccepting = 1;
