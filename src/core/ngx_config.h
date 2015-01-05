@@ -51,22 +51,40 @@
 
 #if !(NGX_WIN32)
 
+/*
+ * C语言的宏是允许嵌套的，其嵌套后，一般的展开规律像函数的参数一样：
+ * 先展开参数，再分析函数，即由内向外展开。但是，注意：
+ * 当宏中有##运算符时，则先展开函数，再展开里面的参数；
+ * 使用ngx_signal_value(NGX_SHUTDOWN_SIGNAL)  就相当于　SIGQUIT
+ * #define ngx_value_helper(n)   #n
+ * 用法：SIG##N   SIGN
+ * #N   "N"
+ */
 #define ngx_signal_helper(n)     SIG##n
 #define ngx_signal_value(n)      ngx_signal_helper(n)
 
 #define ngx_random               random
 
 /* TODO: #ifndef */
+/* 从容关闭 */
 #define NGX_SHUTDOWN_SIGNAL      QUIT
+/* 快速关闭 */
 #define NGX_TERMINATE_SIGNAL     TERM
+/* 从容关闭worker进程 */
 #define NGX_NOACCEPT_SIGNAL      WINCH
+/* 重载配置
+ * 用新的配置开始新的工作进程
+ * 从容关闭旧的工作进程
+ */
 #define NGX_RECONFIGURE_SIGNAL   HUP
 
 #if (NGX_LINUXTHREADS)
 #define NGX_REOPEN_SIGNAL        INFO
 #define NGX_CHANGEBIN_SIGNAL     XCPU
 #else
+/* 重新打开日志文件 */
 #define NGX_REOPEN_SIGNAL        USR1
+/* 平滑升级可执行文件 */
 #define NGX_CHANGEBIN_SIGNAL     USR2
 #endif
 

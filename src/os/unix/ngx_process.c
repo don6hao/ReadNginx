@@ -354,33 +354,35 @@ ngx_signal_handler(int signo)
         switch (signo) {
 
         case ngx_signal_value(NGX_SHUTDOWN_SIGNAL):
+            /* 如果接受到quit信号，则准备退出进程。*/
             ngx_quit = 1;
             action = ", shutting down";
             break;
 
         case ngx_signal_value(NGX_TERMINATE_SIGNAL):
         case SIGINT:
+            /* 如果接受到quit信号，则准备kill worker进程。*/
             ngx_terminate = 1;
             action = ", exiting";
             break;
-
+        /* winch信号，停止接受accept */
         case ngx_signal_value(NGX_NOACCEPT_SIGNAL):
             if (ngx_daemonized) {
                 ngx_noaccept = 1;
                 action = ", stop accepting connections";
             }
             break;
-
+        /* sighup信号用来reconfig */
         case ngx_signal_value(NGX_RECONFIGURE_SIGNAL):
             ngx_reconfigure = 1;
             action = ", reconfiguring";
             break;
-
+        /* 用户信号 ，重新打开log */
         case ngx_signal_value(NGX_REOPEN_SIGNAL):
             ngx_reopen = 1;
             action = ", reopening logs";
             break;
-
+        /* 热代码替换 */
         case ngx_signal_value(NGX_CHANGEBIN_SIGNAL):
             if (getppid() > 1 || ngx_new_binary > 0) {
 
@@ -395,7 +397,7 @@ ngx_signal_handler(int signo)
                 ignore = 1;
                 break;
             }
-
+            /* 正常情况下，需要热代码替换。设置标志位 */
             ngx_change_binary = 1;
             action = ", changing binary";
             break;
@@ -407,7 +409,7 @@ ngx_signal_handler(int signo)
         case SIGIO:
             ngx_sigio = 1;
             break;
-
+        /* 子进程退出 */
         case SIGCHLD:
             ngx_reap = 1;
             break;
@@ -415,6 +417,7 @@ ngx_signal_handler(int signo)
 
         break;
 
+    /* worker的信号处理 */
     case NGX_PROCESS_WORKER:
     case NGX_PROCESS_HELPER:
         switch (signo) {
@@ -460,6 +463,9 @@ ngx_signal_handler(int signo)
                       "before either old or new binary's process");
     }
 
+    /*
+     * 最终如果信号是sigchld，我们收割僵尸进程(用waitpid)
+     */
     if (signo == SIGCHLD) {
         ngx_process_get_status();
     }

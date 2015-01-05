@@ -348,7 +348,13 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
                                         ngx_signal_value(NGX_REOPEN_SIGNAL));
         }
 
-        /* 热代码替换 */
+        /* 热代码替换
+         * 在不中断服务的情况下 - 新的请求也不会丢失，
+         * 使用新的 nginx 可执行程序替换旧的（当升级新版本或添加/删除服务器模块时）。
+         * 两个 nginx 实例会同时运行，一起处理输入的请求。
+         * 要逐步停止旧的实例，你必须发送 WINCH 信号给旧的主进程
+         *
+         * */
         if (ngx_change_binary) {
             ngx_change_binary = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "changing binary");
@@ -356,8 +362,9 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             ngx_new_binary = ngx_exec_new_binary(cycle, ngx_argv);
         }
 
-        /* 接受到停止accept连接，其实也就是worker退出
-         * (有区别的是，这里master不需要退出)
+        /*
+         * 收到WINCH信号
+         * 让worker进程停止接受accept连接，并让worker进程从容关闭
          * */
         if (ngx_noaccept) {
             ngx_noaccept = 0;
@@ -404,6 +411,15 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
             ngx_master_process_exit(cycle);
         }
 
+        /*
+         * 当 nginx 接收到 HUP 信号，它会尝试先解析配置文件（如果指定配置文件，就使用指定的，否则使用默认的），
+         * 成功的话，就应用新的配置文件（例如：重新打开日志文件或监听的套接字）。
+         * 之后，nginx 运行新的工作进程并从容关闭旧的工作进程。
+         * 通知工作进程关闭监听套接字但是继续为当前连接的客户提供服务。
+         * 所有客户端的服务完成后，旧的工作进程被关闭。
+         * 如果新的配置文件应用失败，nginx 将继续使用旧的配置进行工作。
+         *
+         */
         if (ngx_reconfigure) {
             ngx_reconfigure = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reconfiguring");
