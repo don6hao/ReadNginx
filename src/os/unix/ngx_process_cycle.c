@@ -211,8 +211,8 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
          * 在进程接受到一个信号之前，进程会挂起，当捕捉一个信号，
          * 首先执行信号处理程序，然后从sigsuspend返回，
          * 最后将信号屏蔽字恢复为调用sigsuspend之前的值。
-         * 由于前面调用sigemptyset(&set);此时sigsuspend(&set)不会阻塞任何信号
-         * 就是说信号都会被捕抓到
+         * 由于前面调用sigemptyset(&set);信号集位空，
+         * sigsuspend(&set)不会阻塞任何信号，一直等到有信号发生才走下去
          *
          * */
         sigsuspend(&set);
@@ -268,7 +268,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
         /* 收到quit信号 */
         if (ngx_quit) {
-            /* 发送给worker quit信号 */
+            /* 发送给worker进程quit信号 */
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
 
@@ -285,7 +285,15 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             continue;
         }
 
-        /* 收到需要reconfig信号 */
+        /*
+         * 当 nginx 接收到 HUP 信号，它会尝试先解析配置文件（如果指定配置文件，就使用指定的，否则使用默认的），
+         * 成功的话，就应用新的配置文件（例如：重新打开日志文件或监听的套接字）。
+         * 之后，nginx 运行新的工作进程并从容关闭旧的工作进程。
+         * 通知工作进程关闭监听套接字但是继续为当前连接的客户提供服务。
+         * 所有客户端的服务完成后，旧的工作进程被关闭。
+         * 如果新的配置文件应用失败，nginx 将继续使用旧的配置进行工作。
+         *
+         */
         if (ngx_reconfigure) {
             ngx_reconfigure = 0;
 
@@ -304,13 +312,16 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reconfiguring");
 
-            /* 重新初始化config，并重新启动新的worker */
+            /* 会尝试先解析配置文件（如果指定配置文件，就使用指定的，否则使用默认的）
+             * 成功的话，就应用新的配置文件（例如：重新打开日志文件或监听的套接字）。
+             * */
             cycle = ngx_init_cycle(cycle);
             if (cycle == NULL) {
                 cycle = (ngx_cycle_t *) ngx_cycle;
                 continue;
             }
 
+            /* 使用新的配置文件，并重新启动新的worker */
             ngx_cycle = cycle;
             ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx,
                                                    ngx_core_module);
@@ -322,6 +333,8 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             ngx_msleep(100);
 
             live = 1;
+            /* nginx 运行新的工作进程并从容关闭旧的工作进程 */
+            ngx_cycle = cycle;
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
         }
@@ -411,21 +424,13 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
             ngx_master_process_exit(cycle);
         }
 
-        /*
-         * 当 nginx 接收到 HUP 信号，它会尝试先解析配置文件（如果指定配置文件，就使用指定的，否则使用默认的），
-         * 成功的话，就应用新的配置文件（例如：重新打开日志文件或监听的套接字）。
-         * 之后，nginx 运行新的工作进程并从容关闭旧的工作进程。
-         * 通知工作进程关闭监听套接字但是继续为当前连接的客户提供服务。
-         * 所有客户端的服务完成后，旧的工作进程被关闭。
-         * 如果新的配置文件应用失败，nginx 将继续使用旧的配置进行工作。
-         *
-         */
         if (ngx_reconfigure) {
             ngx_reconfigure = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reconfiguring");
 
             cycle = ngx_init_cycle(cycle);
             if (cycle == NULL) {
+                /* 的）*/
                 cycle = (ngx_cycle_t *) ngx_cycle;
                 continue;
             }
