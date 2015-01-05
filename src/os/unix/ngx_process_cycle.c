@@ -162,6 +162,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
          *
          */
         if (delay) {
+            /* 接收SIGALRM信号ngx_sigalrm值等于1，delay的值翻倍 */
             if (ngx_sigalrm) {
                 sigio = 0;
                 delay *= 2;
@@ -227,6 +228,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             ngx_reap = 0;
             ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "reap children");
             /*
+             * 管理子进程
              * 这个里面处理退出的子进程(有的worker异常退出，这时我们就需要重启这个worker )，
              * 如果所有子进程都退出则会返回0.
              */
@@ -234,6 +236,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         }
 
         /*
+         * 当live标志位为0（表示所有子进程已经退出）
          * 如果没有存活的子进程，并且收到了ngx_terminate或者ngx_quit信号，则master退出
          * */
         if (!live && (ngx_terminate || ngx_quit)) {
@@ -340,9 +343,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         }
 
         /*
-         * 代码里面是当热代码替换后，如果ngx_noacceptig被设置了，
-         * 则设置这个标志位(难道意思是热代码替换前要先停止当前的accept连接？)
-         *
+         * ngx_restart，它仅仅是在master工作流程中作为标志位使用，与信号无关。
          */
         if (ngx_restart) {
             ngx_restart = 0;
