@@ -907,9 +907,7 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
             c = cycle->connections;
 
             for (i = 0; i < cycle->connection_n; i++) {
-
-                /* THREAD: lock */
-
+                /* worker进程退出前，先得处理完每个connection上已经发生的事件。*/
                 if (c[i].fd != -1 && c[i].idle) {
                     c[i].close = 1;
                     c[i].read->handler(c[i].read);
@@ -926,6 +924,9 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
 
         ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "worker cycle");
 
+        /*
+         * worker进程处理事件的核心
+         */
         ngx_process_events_and_timers(cycle);
 
         if (ngx_terminate) {
@@ -934,6 +935,10 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
             ngx_worker_process_exit(cycle);
         }
 
+        /*
+         * worker进程收到了SIGQUIT信号，如果此时worker进程不是出于exiting状态，
+         * 就将设置ngx_exiting为1，让其进入exiting状态；同时关闭监听套接口。
+         */
         if (ngx_quit) {
             ngx_quit = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
@@ -980,6 +985,15 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
         }
     }
 
+    /*
+     * Each resource has an associated soft and hard
+     * limit, as defined by the rlimit structure:
+     *     struct rlimit {
+     *         rlim_t rlim_cur;  // Soft limit
+     *         rlim_t rlim_max;  // Hard limit (ceiling for rlim_cur)
+     *     };
+     */
+
     if (ccf->rlimit_nofile != NGX_CONF_UNSET) {
         rlmt.rlim_cur = (rlim_t) ccf->rlimit_nofile;
         rlmt.rlim_max = (rlim_t) ccf->rlimit_nofile;
@@ -1015,7 +1029,7 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
     }
 #endif
 
-    if (geteuid() == 0) {
+    if (geteuid() == 0) { /* root */
         if (setgid(ccf->group) == -1) {
             ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
                           "setgid(%d) failed", ccf->group);
@@ -1065,6 +1079,7 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
         }
     }
 
+    /* 不阻塞信号 */
     sigemptyset(&set);
 
     if (sigprocmask(SIG_SETMASK, &set, NULL) == -1) {
@@ -1083,6 +1098,9 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
         ls[i].previous = NULL;
     }
 
+    /*
+     * 循环调用每个模块的init_process函数（完成每个模块自定义的进程初始化操作）
+     */
     for (i = 0; ngx_modules[i]; i++) {
         if (ngx_modules[i]->init_process) {
             if (ngx_modules[i]->init_process(cycle) == NGX_ERROR) {
@@ -1098,6 +1116,10 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
             continue;
         }
 
+        /*
+         * ngx_process_slot = s;
+         * 若是自己就不用处理继续循环
+         */
         if (n == ngx_process_slot) {
             continue;
         }
@@ -1106,12 +1128,19 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
             continue;
         }
 
+        /*
+         * 关闭其他worker进程的读端文件描述符，
+         * 保留写端文件描述符做worker进程间的通信之用。
+         * */
         if (close(ngx_processes[n].channel[1]) == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                           "close() channel failed");
         }
     }
 
+    /*
+     * 关闭本worker进程channel的写端文件描述符，因为每个worker进程只从自己的channel上读，而不会写。
+     */
     if (close(ngx_processes[ngx_process_slot].channel[0]) == -1) {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                       "close() channel failed");
@@ -1120,7 +1149,9 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
 #if 0
     ngx_last_process = 0;
 #endif
-
+    /*
+     * ngx_channel = ngx_processes[s].channel[1];
+     * */
     if (ngx_add_channel_event(cycle, ngx_channel, NGX_READ_EVENT,
                               ngx_channel_handler)
         == NGX_ERROR)

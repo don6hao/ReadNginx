@@ -391,6 +391,8 @@ ngx_signal_handler(int signo)
                  * not the init process, i.e. the old binary's process
                  * is still running.  Or ignore the signal in the old binary's
                  * process if the new binary's process is already running.
+                 * 若进程的父进程（old 代码进程是父进程）不是init进程（getppid==1)，忽略此信号。
+                 * 新的代码进程已在运行中（ngx_new_binary > 0)，old代码进程忽略信号，
                  */
 
                 action = ", ignoring";
